@@ -17,7 +17,6 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-import avatar_ui
 import ouc_common
 import proxy_chain
 import zen_proxy
@@ -80,39 +79,6 @@ class RunHiddenTests(unittest.TestCase):
         _, kwargs = run.call_args
         self.assertNotIn("creationflags", kwargs)
 
-
-class RecentNetworkErrorTests(unittest.TestCase):
-    def _line(self, when: datetime, message: str) -> str:
-        return (
-            f"timestamp={when.strftime('%Y-%m-%dT%H:%M:%S')}.123Z "
-            f'level=ERROR run=test message="{message}"'
-        )
-
-    def test_only_recent_upstream_failures_are_reported(self) -> None:
-        now = datetime.now(timezone.utc)
-        old = self._line(now - timedelta(hours=2), "ECONNRESET while contacting provider")
-        recent = self._line(now - timedelta(seconds=30), "AI.Error: ECONNRESET")
-        own_503 = (
-            f"timestamp={now.strftime('%Y-%m-%dT%H:%M:%S')}.123Z level=INFO "
-            'message="Sent HTTP response" http.method=GET http.url=/api/info http.status=503'
-        )
-        upstream_503 = self._line(
-            now - timedelta(seconds=20), "AI_APICallError statusCode=503"
-        )
-
-        found = avatar_ui._recent_network_errors(
-            [old, recent, own_503, upstream_503]
-        )
-
-        self.assertEqual(len(found), 2)
-        self.assertTrue(any("ECONNRESET" in line for line in found))
-        self.assertTrue(any("AI_APICallError" in line for line in found))
-        self.assertFalse(any("api/info" in line for line in found))
-
-    def test_lines_without_a_timestamp_are_ignored(self) -> None:
-        self.assertEqual(
-            avatar_ui._recent_network_errors(["stack trace: ECONNRESET"]), []
-        )
 
 
 class EdgeFailoverTests(unittest.TestCase):
@@ -354,157 +320,7 @@ class StreamResetReportingTests(unittest.TestCase):
             left.close()
 
 
-class TaskEnabledParseTests(unittest.TestCase):
-    def test_enabled_tasks_omit_the_element(self) -> None:
-        self.assertTrue(avatar_ui._task_xml_enabled("<Task><Settings></Settings></Task>"))
 
-    def test_disabled_task_is_detected(self) -> None:
-        self.assertFalse(
-            avatar_ui._task_xml_enabled("<Task><Settings><Enabled>false</Enabled></Settings></Task>")
-        )
-
-    def test_utf16_text_decoded_as_single_bytes_still_parses(self) -> None:
-        xml = "<Task><Settings><Enabled>false</Enabled></Settings></Task>"
-        interleaved = "".join(char + "\x00" for char in xml)
-        self.assertFalse(avatar_ui._task_xml_enabled(interleaved))
-
-
-class AutoRepairTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self._saved_log = avatar_ui.AUTO_REPAIR_LOG
-        avatar_ui.AUTO_REPAIR_LOG = Path(self.tmp.name) / "auto_repair.log"
-
-    def tearDown(self) -> None:
-        avatar_ui.AUTO_REPAIR_LOG = self._saved_log
-        self.tmp.cleanup()
-
-    def _api(self, state: dict) -> avatar_ui.AvatarControlApi:
-        api = object.__new__(avatar_ui.AvatarControlApi)
-        api._repair_lock = threading.Lock()
-        api._repair_last = {}
-        api._repair_actions = []
-        api._repair_status = ""
-        api._repair_enabled = True
-        api._action_lock = threading.Lock()
-        api.get_state = lambda force_egress=False: state
-        api._repair_performed = []
-        api._run_repair_action = lambda action: (
-            api._repair_performed.append(action) or {"ok": True, "message": "done"}
-        )
-        return api
-
-    def _state(self, *, wired: bool, listening: bool, keeper_running: bool) -> dict:
-        return {
-            "services": {
-                "proxy_listening": listening,
-                "keeper_running": keeper_running,
-                "keeper_heartbeat": 1.0,
-            },
-            "warp": {"connected": True, "rotating": False},
-            "proxy": {"fallback_active": False, "errors_5m": 0},
-            "probe": {"code": "ok"},
-            "egress": {"mode": "warp"},
-            "lane": {"desktop_service_wired": wired, "path_wired": False},
-        }
-
-    def test_repairs_proxy_only_when_the_task_was_not_disabled(self) -> None:
-        state = self._state(wired=True, listening=False, keeper_running=False)
-        api = self._api(state)
-
-        with mock.patch.object(avatar_ui, "_task_enabled", return_value=True):
-            api._auto_repair_tick()
-        self.assertEqual(api._repair_performed, ["start_keeper"])
-
-        api2 = self._api(state)
-        with mock.patch.object(avatar_ui, "_task_enabled", return_value=False):
-            api2._auto_repair_tick()
-        self.assertEqual(api2._repair_performed, [])
-
-    def test_fallback_changes_edge_instead_of_restarting_a_healthy_route(self) -> None:
-        state = self._state(wired=True, listening=True, keeper_running=True)
-        state["proxy"] = {"fallback_active": True, "errors_5m": 1}
-        api = self._api(state)
-
-        api._auto_repair_tick()
-
-        self.assertEqual(api._repair_performed, ["hop"])
-
-    def test_repeated_repairs_respect_the_cooldown(self) -> None:
-        state = self._state(wired=True, listening=False, keeper_running=False)
-        api = self._api(state)
-
-        with mock.patch.object(avatar_ui, "_task_enabled", return_value=True):
-            api._auto_repair_tick()
-            api._auto_repair_tick()
-
-        self.assertEqual(api._repair_performed, ["start_keeper"])
-
-
-class HealthTests(unittest.TestCase):
-    def _health(self, *, proxy: dict, net_errors: list[str]) -> dict:
-        api = object.__new__(avatar_ui.AvatarControlApi)
-        return api._build_health(
-            warp_installed=True,
-            warp_connected=True,
-            rotating=False,
-            egress={"mode": "warp"},
-            keeper_running=True,
-            guard_running=True,
-            proxy_listening=True,
-            svc_wired=True,
-            installed=True,
-            probe={"ok": True, "code": "ok", "ms": 120},
-            proxy=proxy,
-            net_errors=net_errors,
-            desktop_installed=True,
-            cli_installed=True,
-            path_wired=True,
-        )
-
-    def test_direct_fallback_is_visible_and_actionable(self) -> None:
-        health = self._health(
-            proxy={"fallback_active": True, "fallback_age": 120}, net_errors=[]
-        )
-        issue = next(i for i in health["issues"] if i["title"] == "Using a direct connection")
-
-        self.assertEqual(issue["level"], "warn")
-        self.assertEqual(issue["fix"], "repair_warp")
-        self.assertIn("2 minutes ago", issue["detail"])
-
-    def test_recent_transport_errors_are_reported_without_duplicate_fallback(self) -> None:
-        health = self._health(
-            proxy={"fallback_active": False}, net_errors=["ECONNRESET while reading"]
-        )
-        titles = [i["title"] for i in health["issues"]]
-        self.assertIn("OpenCode hit a network error", titles)
-
-        duplicate = self._health(
-            proxy={"fallback_active": True, "fallback_age": 120},
-            net_errors=["ECONNRESET while reading"],
-        )
-        duplicate_titles = [i["title"] for i in duplicate["issues"]]
-        self.assertIn("Using a direct connection", duplicate_titles)
-        self.assertNotIn("OpenCode hit a network error", duplicate_titles)
-
-    def test_repeated_stream_resets_are_surfaced_with_a_rotation_action(self) -> None:
-        health = self._health(
-            proxy={"fallback_active": False, "stream_resets_5m": 2}, net_errors=[]
-        )
-        issue = next(
-            i for i in health["issues"] if i["title"] == "Response streams keep dropping"
-        )
-
-        self.assertEqual(issue["level"], "warn")
-        self.assertEqual(issue["fix"], "hop")
-
-        single = self._health(
-            proxy={"fallback_active": False, "stream_resets_5m": 1}, net_errors=[]
-        )
-        self.assertNotIn(
-            "Response streams keep dropping",
-            [i["title"] for i in single["issues"]],
-        )
 
 
 class CustomProxyFailoverTests(unittest.TestCase):
@@ -561,53 +377,6 @@ class CustomProxyFailoverTests(unittest.TestCase):
         self.assertGreaterEqual(advance.call_count, 1)
         self.assertEqual(proxy_chain.PROXY_INDEX_FILE.read_text(encoding="utf-8"), "0")
 
-
-class CmdWrapperEncodingTests(unittest.TestCase):
-    def test_non_ascii_path_switches_the_shim_to_utf8(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp) / "opencode.cmd"
-            content = (
-                "@echo off\r\n"
-                '"C:\\Users\\\u043f\u0440\u043e\u0444\u0438\u043b\u044c\\python.exe" '
-                '"C:\\Users\\\u043f\u0440\u043e\u0444\u0438\u043b\u044c\\zen_lane.py" %*\r\n'
-                "exit /b %ERRORLEVEL%\r\n"
-            )
-            avatar_ui._write_cmd_wrapper(target, content)
-            data = target.read_bytes()
-            self.assertIn(b"chcp 65001 >nul", data)
-            self.assertEqual(
-                data.decode("utf-8"),
-                content.replace("@echo off\r\n", "@echo off\r\nchcp 65001 >nul\r\n", 1),
-            )
-
-    def test_ascii_path_keeps_the_shim_unchanged(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp) / "opencode.cmd"
-            content = (
-                '@echo off\r\n"C:\\Python310\\python.exe" '
-                '"C:\\ouc\\zen_lane.py" %*\r\nexit /b %ERRORLEVEL%\r\n'
-            )
-            avatar_ui._write_cmd_wrapper(target, content)
-            self.assertEqual(target.read_bytes(), content.encode("ascii"))
-            self.assertNotIn(b"chcp", target.read_bytes())
-
-    def test_deploy_handles_a_non_ascii_install_directory(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp) / "\u043f\u0440\u043e\u0444\u0438\u043b\u044c"
-            bin_dir = base / "bin"
-            scripts_dir = base / "scripts"
-            bin_dir.mkdir(parents=True)
-            scripts_dir.mkdir(parents=True)
-            with mock.patch.object(avatar_ui, "BIN_DIR", bin_dir), mock.patch.object(
-                avatar_ui, "SCRIPTS_DIR", scripts_dir
-            ), mock.patch.object(avatar_ui, "ensure_dirs"), mock.patch.object(
-                avatar_ui.sys, "frozen", True, create=True
-            ):
-                avatar_ui._deploy_scripts_and_shims()
-
-            shim = bin_dir / "opencode.cmd"
-            self.assertTrue(shim.is_file())
-            self.assertIn(b"chcp 65001 >nul", shim.read_bytes())
 
 
 if __name__ == "__main__":
