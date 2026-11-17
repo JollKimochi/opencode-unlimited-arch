@@ -36,7 +36,7 @@ KEEPER="${OUC_KEEPER_UNIT:-opencode-unlimited-keeper}"
 # selected TUN. A wrong mode here can silently move traffic out of WARP.
 MODE="${OUC_WARP_MODE:-proxy}"
 
-COOLDOWN=75        # seconds between rotations (a rotation takes ~15s)
+COOLDOWN=30        # seconds between rotations (a rotation takes ~15s)
 MAX_HOP_TRIES=4
 BLACKLIST_MAX=200  # blacklist cap; oldest entries are recycled when full
 
@@ -71,11 +71,15 @@ fi
 cur_v6(){
   local v ep
   if [ "$USE_PROXY" = "1" ]; then
+    v=$(timeout 6 curl -x socks5h://127.0.0.1:40000 -s -m 4 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | sed -n 's/^ip=//p' | head -1)
+    case "$v" in *:*) echo "$v"; return;; esac
     for ep in https://api6.ipify.org https://api64.ipify.org; do
       v=$(timeout 10 curl -x socks5h://127.0.0.1:40000 -s -m 8 "$ep" 2>/dev/null)
       case "$v" in *:*) echo "$v"; return;; esac
     done
   else
+    v=$(timeout 6 curl -6 -s -m 4 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | sed -n 's/^ip=//p' | head -1)
+    case "$v" in *:*) echo "$v"; return;; esac
     for ep in https://api6.ipify.org https://api64.ipify.org; do
       v=$(timeout 10 curl -6 -s -m 8 "$ep" 2>/dev/null)
       case "$v" in *:*) echo "$v"; return;; esac
@@ -177,7 +181,7 @@ fi
 glog "zen-guard up (cooldown ${COOLDOWN}s, blacklist cap ${BLACKLIST_MAX})"
 
 while true; do
-  sleep 20
+  sleep 10
 
   # ---- wall sniff (new bytes only) ----
   [ -f "$LOGF" ] || continue
