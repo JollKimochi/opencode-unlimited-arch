@@ -7,6 +7,8 @@
 [![Repository](https://img.shields.io/badge/GitHub-Opencode--Unlimited-blue?style=for-the-badge&logo=github)](https://github.com/ShadowySphinX/Opencode-Unlimited-Limit-Bypass-)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 
+> **Arch Linux / CachyOS fork.** This fork is based on upstream v3.0 by [Avatar (ShadowySphinX)](https://github.com/ShadowySphinX). It keeps the upstream history and MIT license, and adds a tested Arch/CachyOS setup: MASQUE by default, faster guard rotation, and Arch-specific notes. It is not affiliated with upstream.
+
 Automatic rate-limit rotator, multi-egress proxy router, and autonomous session auto-resume for **OpenCode Desktop** and **OpenCode CLI**.
 
 ![OpenCode Unlimited Dashboard](assets/ui-preview.png)
@@ -14,6 +16,59 @@ Automatic rate-limit rotator, multi-egress proxy router, and autonomous session 
 OpenCode's free-tier limits are applied to the inbound public IP address (`/64` prefix on IPv6, `/32` on IPv4). The rotator changes that address and clears the matching client-side lockout.
 
 This tool monitors OpenCode logs for quota and rate-limit errors, cycles the active identity (fresh IPv6 `/64`, Tor circuit, or proxy pool node), and tries to continue the running session without starting a new chat.
+
+---
+
+## Arch Linux / CachyOS (this fork)
+
+Tested on CachyOS with `opencode-beta 2.3.0` and `cloudflare-warp-bin`. This fork is Arch-first; the upstream Windows build is unchanged.
+
+### Quick start
+
+```bash
+# 1. Dependencies (yay or paru is required for cloudflare-warp-bin)
+yay -S --needed cloudflare-warp-bin opencode-beta
+
+# 2. Clone this fork, not the upstream one-liner
+git clone https://github.com/JollKimochi/opencode-unlimited-arch.git
+cd opencode-unlimited-arch
+
+# 3. Install the lane, keeper, guard, and shim
+bash install.sh
+```
+
+If `yay` asks to remove `opencode` because `opencode-beta` conflicts with it, answer **yes**. `opencode-beta` provides `/usr/bin/opencode`; the installer will use it.
+
+### What this fork changes
+
+- **MASQUE by default** in `install.sh` and `scripts/warp-keeper.sh`. WireGuard/UDP is blocked on some networks; MASQUE over 443 is the transport that connects. Override with `OUC_WARP_PROTOCOL=WireGuard` if your ISP throttles MASQUE.
+- **Faster guard:** `COOLDOWN=30`, poll `10s`, and the `/64` probe uses Cloudflare `cdn-cgi/trace` through WARP's SOCKS listener, with the old ipify endpoints as fallback.
+- **Arch notes and troubleshooting** (below). The upstream Windows-specific sections remain for reference.
+
+### Verify after install
+
+```bash
+warp-cli --accept-tos status
+
+curl -x socks5h://127.0.0.1:40000 --max-time 8 \
+  https://www.cloudflare.com/cdn-cgi/trace | grep -E '^(warp|ip)='
+
+opencode-unlimited-doctor
+```
+
+Expect `Connected`, `warp=on`, and a clean doctor report. Then start OpenCode with the `opencode` shim from `~/.local/bin`.
+
+### Arch / CachyOS troubleshooting
+
+- **Stale server after switching mode or proxy:** close the TUI, then kill the old service before relaunching:
+  `pkill -f 'opencode serve --service'`
+  A TUI can reconnect to an old server and inherit its previous proxy environment.
+- **`opencode` is still the repo package:** `yay -S opencode-beta` replaces it. Check with `pacman -Qo /usr/bin/opencode`; it should say `opencode-beta`.
+- **WARP will not connect:** check `warp-cli --accept-tos status`, then restart the keeper:
+  `sudo systemctl restart opencode-unlimited-keeper`.
+  The default is MASQUE; if your network blocks MASQUE, set `OUC_WARP_PROTOCOL=WireGuard` in the keeper unit and run `warp-cli --accept-tos tunnel protocol set WireGuard`.
+- **MCP servers fail only at startup:** wait until `curl` through `127.0.0.1:40000` returns `warp=on` before opening OpenCode. The lane waits for its local proxy, not for WARP's upstream.
+- **Guard log:** `tail -f ~/.local/share/opencode-unlimited/guard/guard.log`
 
 ---
 
@@ -299,6 +354,7 @@ The build disables UPX, embeds file version metadata, and publishes the result w
 
 - Built & Maintained by **[Avatar (ShadowySphinX)](https://github.com/ShadowySphinX)**.
 - Official Project Repository: [ShadowySphinX/Opencode-Unlimited-Limit-Bypass-](https://github.com/ShadowySphinX/Opencode-Unlimited-Limit-Bypass-)
+- Arch/CachyOS fork maintained by **[JollKimochi](https://github.com/JollKimochi)**: [opencode-unlimited-arch](https://github.com/JollKimochi/opencode-unlimited-arch). This fork is not affiliated with the upstream project.
 
 ---
 
