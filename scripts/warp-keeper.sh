@@ -90,7 +90,9 @@ ensure_connected(){
 
   STATUS="$(wo status 2>/dev/null)"
   if echo "$STATUS" | grep -qiE "mitm|happy_eyeball|unable"; then
-    w tunnel protocol set WireGuard
+    # Arch/CachyOS fork: MASQUE is the default because WireGuard/UDP is
+    # blocked on some networks. Override with OUC_WARP_PROTOCOL=WireGuard.
+    w tunnel protocol set "${OUC_WARP_PROTOCOL:-MASQUE}"
   fi
   w tunnel rotate-keys
   if [ "$MODE" = "warp" ]; then

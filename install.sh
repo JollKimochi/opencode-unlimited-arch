@@ -230,8 +230,9 @@ if [ -n "${SSH_CLIENT:-}" ] || [ -n "${SSH_TTY:-}" ] || [ -n "${SSH_CONNECTION:-
   say "VPS / SSH environment detected: enforcing isolated proxy mode (port 40000) to protect SSH access"
 fi
 
-# Use WireGuard so ISPs that throttle MASQUE/UDP 443 do not break the tunnel.
-sw tunnel protocol set WireGuard >/dev/null 2>&1 || true
+# Default to MASQUE: WireGuard/UDP is blocked on some networks.
+# Override with OUC_WARP_PROTOCOL=WireGuard if your ISP throttles MASQUE.
+sw tunnel protocol set "${OUC_WARP_PROTOCOL:-MASQUE}" >/dev/null 2>&1 || true
 
 sw mode proxy
 sw proxy port 40000
