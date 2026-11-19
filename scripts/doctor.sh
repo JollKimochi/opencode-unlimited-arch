@@ -58,6 +58,14 @@ fi
 if [ "$IS_PROXY" = "1" ]; then
   ok "isolated proxy mode active (port 40000 / SSH safe)"
   ok "kill-switch disabled in proxy mode (protects SSH connection)"
+  PROTO=$(wo settings 2>/dev/null | sed -n 's/.*WARP tunnel protocol:[[:space:]]*//p' | head -1)
+  if [ "$PROTO" = "MASQUE" ]; then
+    ok "warp protocol: MASQUE (required by proxy mode)"
+  elif [ -n "$PROTO" ]; then
+    bad "warp protocol is $PROTO — proxy mode only supports MASQUE; run: sudo warp-cli --accept-tos tunnel protocol set MASQUE"
+  else
+    warn "warp protocol not reported — check: sudo warp-cli --accept-tos settings"
+  fi
   port_open 40000 \
     && ok "WARP isolated SOCKS proxy: listening on 127.0.0.1:40000" \
     || bad "WARP proxy port 40000 is not listening — restart the keeper"

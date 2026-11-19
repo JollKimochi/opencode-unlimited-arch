@@ -20,6 +20,18 @@ fi
 w(){  "$WARP" --accept-tos "$@" >/dev/null 2>&1 && return 0; "$WARP" "$@" >/dev/null 2>&1; }
 wo(){ "$WARP" --accept-tos "$@" 2>/dev/null && return 0; "$WARP" "$@" 2>/dev/null; }
 
+# Proxy mode only accepts MASQUE. WireGuard in proxy mode fails with
+# InvalidKey("Proxy mode only supports MASQUE") on every connect attempt,
+# so the tunnel never comes up and no fresh /64 can arrive.
+enforce_protocol(){
+  local want="${OUC_WARP_PROTOCOL:-MASQUE}" have
+  have=$(wo settings 2>/dev/null | sed -n 's/.*WARP tunnel protocol:[[:space:]]*//p' | head -1)
+  [ -n "$have" ] || return 0
+  [ "$have" = "$want" ] && return 0
+  echo "warp protocol is $have — proxy mode requires $want; setting it"
+  w tunnel protocol set "$want"
+}
+
 IFACE=CloudflareWARP
 TICK=45
 
@@ -44,6 +56,8 @@ proxy_ready(){
 }
 
 ensure_connected(){
+  enforce_protocol
+
   # 1. Already connected in the right shape: do not touch anything.
   #    A stale "Connected" with no port 40000 listener is mode drift, not health.
   if wo status | head -1 | grep -q Connected; then

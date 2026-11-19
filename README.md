@@ -44,6 +44,7 @@ opencode
 ## What this fork changes
 
 - **MASQUE by default** in `install.sh` and `scripts/warp-keeper.sh`. WireGuard/UDP is blocked on some networks; MASQUE over 443 is the transport that connects. Override with `OUC_WARP_PROTOCOL=WireGuard` if your ISP throttles MASQUE.
+- **Protocol enforcement:** `zen-guard.sh` and `warp-keeper.sh` re-assert `OUC_WARP_PROTOCOL` (MASQUE by default) before touching the tunnel. Proxy mode only accepts MASQUE; WireGuard there fails with `InvalidKey("Proxy mode only supports MASQUE")`, leaving port 40000 down and every rotation stuck at `no fresh /64`. The guard also holds the wall instead of burning retries when WARP has no IPv6.
 - **Faster guard:** `COOLDOWN=30`, poll `10s`, and the `/64` probe uses Cloudflare `cdn-cgi/trace` through WARP's SOCKS listener, with the old ipify endpoints as fallback.
 - **Arch-only tree:** the Windows GUI, EXE, build scripts, and GUI-only Python dependencies are removed from `main`. The upstream history is preserved.
 
@@ -57,6 +58,7 @@ On Linux, `zen-lane.sh` starts an ephemeral HTTP CONNECT proxy, exports it to th
 
 ```bash
 warp-cli --accept-tos status
+warp-cli --accept-tos settings | grep -i 'tunnel protocol'
 curl -s -x socks5h://127.0.0.1:40000 --max-time 8 \
   https://www.cloudflare.com/cdn-cgi/trace | grep -E '^(warp|ip)='
 opencode-unlimited-doctor
@@ -68,6 +70,7 @@ type -a opencode
 Expected:
 
 - `Status update: Connected`
+- `WARP tunnel protocol: MASQUE`
 - `warp=on`
 - doctor reports no failures
 - `/usr/bin/opencode` is owned by `opencode-beta`
@@ -115,6 +118,22 @@ sudo systemctl restart opencode-unlimited-keeper
 systemctl --user restart opencode-unlimited-guard
 opencode-unlimited-doctor
 ```
+
+### Rotations fail with `no fresh /64`
+
+Check the protocol before anything else:
+
+```bash
+warp-cli --accept-tos settings | grep -i 'tunnel protocol'
+```
+
+Proxy mode only supports **MASQUE**. If it says `WireGuard`, every connect fails with `InvalidKey("Proxy mode only supports MASQUE")`, port 40000 stays closed, and the guard can never obtain a new `/64`. Set it back:
+
+```bash
+warp-cli --accept-tos tunnel protocol set MASQUE
+```
+
+The guard and keeper now re-assert the protocol before every rotation and reconnect, and `opencode-unlimited-doctor` flags the mismatch. If it flips again on its own, find what is writing the setting: an external tool or a manual `warp-cli tunnel protocol set WireGuard` is the only way it changes.
 
 ### WireGuard works better than MASQUE
 

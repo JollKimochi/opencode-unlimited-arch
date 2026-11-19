@@ -50,6 +50,19 @@ wo(){ sudo -n "$WARP" --accept-tos "$@" 2>/dev/null && return 0; sudo -n "$WARP"
 
 glog(){ echo "$(date '+%m-%d %H:%M:%S') $*" >> "$GUARD_LOG"; }
 
+# WARP's isolated proxy mode only accepts MASQUE. If the protocol is flipped
+# back to WireGuard, every connect fails with
+# InvalidKey("Proxy mode only supports MASQUE"): no tunnel, no /64, and every
+# rotation ends as "no fresh /64". Enforce it before touching the tunnel.
+enforce_protocol(){
+  local want="${OUC_WARP_PROTOCOL:-MASQUE}" have
+  have=$(wo settings 2>/dev/null | sed -n 's/.*WARP tunnel protocol:[[:space:]]*//p' | head -1)
+  [ -n "$have" ] || return 0
+  [ "$have" = "$want" ] && return 0
+  glog "warp protocol is $have — proxy mode requires $want; setting it"
+  w tunnel protocol set "$want"
+}
+
 state_get(){ python3 -c "
 import json
 try: d=json.load(open('$STATE'))
@@ -131,6 +144,7 @@ keeper_resume(){
 hop_once(){
   # one non-destructive session rotation. prints the new IPv6 or empty.
   local old="$1" v="" i
+  enforce_protocol
   keeper_pause
   w disconnect
 
@@ -202,8 +216,21 @@ while true; do
   AGE=$((NOW - LASTHOP))
 
   if [ "$WALL" = 1 ] && [ "$AGE" -ge "$COOLDOWN" ]; then
+    # A broken tunnel cannot produce a fresh /64. Repair the protocol first
+    # and give WARP a few seconds to come back before burning rotation tries.
+    enforce_protocol
     OLD=$(cur_v6)
-    glog "wall detected — rotating (was: ${OLD:-?})"
+    for i in 1 2 3 4; do
+      [ -n "$OLD" ] && break
+      sleep 2
+      OLD=$(cur_v6)
+    done
+    if [ -z "$OLD" ]; then
+      state_set offset "$PREV_OFF"
+      glog "wall detected but WARP has no IPv6 — tunnel not healthy; keeping the wall for the next tick"
+      continue
+    fi
+    glog "wall detected — rotating (was: $OLD)"
     blacklist_add "$OLD"
     NEW=""
     TRY=0
