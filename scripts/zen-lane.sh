@@ -50,6 +50,11 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# A silent direct fallback burns the home IP and keeps the free-tier wall
+# alive no matter how many /64 rotations happen. Fail closed by default;
+# set OUC_STRICT_PROXY=0 to restore the old direct fallback.
+export OUC_STRICT_PROXY="${OUC_STRICT_PROXY:-1}"
+
 # ---- start the local HTTP CONNECT proxy on an ephemeral port
 PORT_FILE="$TD/proxy.port"
 PROXY_LOG="$TD/proxy.log"
@@ -83,6 +88,58 @@ export https_proxy="$PROXY_URL"
 export all_proxy="$PROXY_URL"
 export NO_PROXY="127.0.0.1,localhost,::1"
 export no_proxy="$NO_PROXY"
+
+# ---- keep the shared background service on this lane
+# OpenCode 2.3 keeps a `serve --service` process that outlives the TUI and is
+# reused by later launches. A service started in normal mode has no proxy env:
+# every request leaves from the home IP, so WARP /64 rotations change nothing
+# and the free-tier wall never clears. If the registered service is not bound
+# to a live lane proxy, stop it so this launch spawns a fresh one with our env.
+SERVICE_STATE="${XDG_STATE_HOME:-$HOME/.local/state}/opencode/service.json"
+
+service_lane_port(){
+  local pid="$1" env_url port
+  kill -0 "$pid" 2>/dev/null || return 1
+  tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null \
+    | grep -q 'opencode serve --service' || return 1
+  env_url=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null \
+    | sed -n -e 's/^HTTPS_PROXY=//p' -e 's/^https_proxy=//p' \
+             -e 's/^ALL_PROXY=//p' -e 's/^all_proxy=//p' | head -1)
+  case "$env_url" in
+    http://127.0.0.1:*|https://127.0.0.1:*) ;;
+    *) return 1 ;;
+  esac
+  port="${env_url##*:}"
+  port="${port%%/*}"
+  case "$port" in ''|*[!0-9]*) return 1 ;; esac
+  (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null || return 1
+  echo "$port"
+}
+
+reap_shared_service(){
+  local pid
+  [ -f "$SERVICE_STATE" ] || return 0
+  pid=$(python3 -c '
+import json, sys
+try: d = json.load(open(sys.argv[1]))
+except Exception: raise SystemExit(1)
+p = d.get("pid")
+print(p if isinstance(p, int) and p > 0 else "")' "$SERVICE_STATE" 2>/dev/null)
+  [ -n "$pid" ] || return 0
+  [ -n "$(service_lane_port "$pid")" ] && return 0
+  echo "zen-lane: shared OpenCode service $pid is not on the WARP lane — restarting it" >&2
+  kill "$pid" 2>/dev/null || true
+  for _ in $(seq 1 40); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+  rm -f "$SERVICE_STATE" "$SERVICE_STATE.pty-handoff" 2>/dev/null || true
+}
+
+case "${1:-}" in
+  ""|run|serve) reap_shared_service ;;
+esac
 
 # ---- private machine-id (some endpoints sniff it; fresh per launch costs nothing)
 if [ -e /etc/machine-id ]; then

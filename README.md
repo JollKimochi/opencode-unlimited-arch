@@ -46,6 +46,8 @@ opencode
 - **MASQUE by default** in `install.sh` and `scripts/warp-keeper.sh`. WireGuard/UDP is blocked on some networks; MASQUE over 443 is the transport that connects. Override with `OUC_WARP_PROTOCOL=WireGuard` if your ISP throttles MASQUE.
 - **Protocol enforcement:** `zen-guard.sh` and `warp-keeper.sh` re-assert `OUC_WARP_PROTOCOL` (MASQUE by default) before touching the tunnel. Proxy mode only accepts MASQUE; WireGuard there fails with `InvalidKey("Proxy mode only supports MASQUE")`, leaving port 40000 down and every rotation stuck at `no fresh /64`. The guard also holds the wall instead of burning retries when WARP has no IPv6.
 - **Faster guard:** `COOLDOWN=30`, poll `10s`, and the `/64` probe uses Cloudflare `cdn-cgi/trace` through WARP's SOCKS listener, with the old ipify endpoints as fallback.
+- **Fail-closed lane:** `zen-lane.sh` sets `OUC_STRICT_PROXY=1` by default. If WARP is down, the request fails instead of silently leaving from the home IP and burning the same free-tier quota the lane is trying to rotate. Set `OUC_STRICT_PROXY=0` to restore the old direct fallback.
+- **Lane-bound shared service:** the launcher detects OpenCode's shared `serve --service` process and restarts it when it was started outside the lane. Without that, the service keeps sending from the home IP and `/64` rotation can never clear the wall. `opencode-unlimited-doctor` reports whether the service is lane-bound.
 - **Arch-only tree:** the Windows GUI, EXE, build scripts, and GUI-only Python dependencies are removed from `main`. The upstream history is preserved.
 
 ## How it works
@@ -134,6 +136,41 @@ warp-cli --accept-tos tunnel protocol set MASQUE
 ```
 
 The guard and keeper now re-assert the protocol before every rotation and reconnect, and `opencode-unlimited-doctor` flags the mismatch. If it flips again on its own, find what is writing the setting: an external tool or a manual `warp-cli tunnel protocol set WireGuard` is the only way it changes.
+
+### The guard rotates, but the wall comes back immediately
+
+The free-tier limit is tied to the IP that OpenCode actually uses. If OpenCode's shared background service was started outside the lane, rotating WARP changes nothing: every request still leaves from your home IP.
+
+OpenCode 2.3 keeps one `opencode serve --service` process and the TUI attaches to it. That process inherits its environment when it starts, and it outlives the TUI. Start it in normal mode and it keeps running with no proxy, even after you launch the unlimited shim.
+
+Check what the registered service uses:
+
+```bash
+opencode-unlimited-doctor
+```
+
+A lane-bound service reports:
+
+```
+✓ OpenCode service 12345 is lane-bound (http://127.0.0.1:41234)
+```
+
+A direct service reports:
+
+```
+! OpenCode service 12345 runs direct — relaunch through the shim
+```
+
+`zen-lane.sh` now checks this itself. When the registered service is not bound to a live lane proxy, it stops that service before starting the lane, so the next `opencode` spawns a replacement inside the proxy environment. The lane also runs fail-closed by default (`OUC_STRICT_PROXY=1`): if WARP is unreachable, requests fail instead of quietly falling back to the direct route. Set `OUC_STRICT_PROXY=0` for the old fallback behavior.
+
+Manual fix if you do not want to relaunch:
+
+```bash
+pkill -f '[o]pencode serve --service'
+opencode
+```
+
+Close the normal-mode TUI first. The service is shared, so it cannot be lane-bound and direct at the same time.
 
 ### WireGuard works better than MASQUE
 

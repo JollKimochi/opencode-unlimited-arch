@@ -69,6 +69,25 @@ if [ "$IS_PROXY" = "1" ]; then
   port_open 40000 \
     && ok "WARP isolated SOCKS proxy: listening on 127.0.0.1:40000" \
     || bad "WARP proxy port 40000 is not listening — restart the keeper"
+  # The shared background service makes the provider calls. A service started
+  # outside the lane keeps the home IP, so /64 rotations cannot clear the wall.
+  SVC_STATE="${XDG_STATE_HOME:-$HOME/.local/state}/opencode/service.json"
+  if [ -f "$SVC_STATE" ]; then
+    SVC_PID=$(python3 -c '
+import json, sys
+try: d = json.load(open(sys.argv[1]))
+except Exception: raise SystemExit(1)
+p = d.get("pid")
+print(p if isinstance(p, int) and p > 0 else "")' "$SVC_STATE" 2>/dev/null || true)
+    if [ -n "${SVC_PID:-}" ] && kill -0 "$SVC_PID" 2>/dev/null; then
+      SVC_PROXY=$(tr '\0' '\n' < "/proc/$SVC_PID/environ" 2>/dev/null | sed -n 's/^HTTPS_PROXY=//p' | head -1)
+      if [ -n "$SVC_PROXY" ]; then
+        ok "OpenCode service $SVC_PID is lane-bound ($SVC_PROXY)"
+      else
+        warn "OpenCode service $SVC_PID runs direct — relaunch through the shim; the next launch restarts it on the lane"
+      fi
+    fi
+  fi
   # In isolated mode, query through proxy so we verify WARP egress without touching SSH eth0
   CF_TRACE=$(timeout 12 curl -x socks5h://127.0.0.1:40000 -s -m 10 https://cloudflare.com/cdn-cgi/trace 2>/dev/null || true)
   V6=$(echo "$CF_TRACE" | grep "^ip=" | cut -d= -f2)

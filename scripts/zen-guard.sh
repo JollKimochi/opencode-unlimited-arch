@@ -194,6 +194,33 @@ fi
 
 glog "zen-guard up (cooldown ${COOLDOWN}s, blacklist cap ${BLACKLIST_MAX})"
 
+# OpenCode's provider calls are made by its shared background service. If that
+# service was started outside the lane it sends from the home IP, and no /64
+# rotation can clear the wall. Report it once instead of rotating in circles.
+svc_lane_bound(){
+  local f="${XDG_STATE_HOME:-$HOME/.local/state}/opencode/service.json" pid url port
+  [ -f "$f" ] || return 1
+  pid=$(python3 -c '
+import json, sys
+try: d = json.load(open(sys.argv[1]))
+except Exception: raise SystemExit(1)
+p = d.get("pid")
+print(p if isinstance(p, int) and p > 0 else "")' "$f" 2>/dev/null) || return 1
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
+  url=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null \
+    | sed -n -e 's/^HTTPS_PROXY=//p' -e 's/^https_proxy=//p' | head -1)
+  case "$url" in
+    http://127.0.0.1:*|https://127.0.0.1:*) ;;
+    *) return 1 ;;
+  esac
+  port="${url##*:}"
+  port="${port%%/*}"
+  case "$port" in ''|*[!0-9]*) return 1 ;; esac
+  (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null
+}
+
+LAST_LANE_WARN=0
+
 while true; do
   sleep 10
 
@@ -216,6 +243,14 @@ while true; do
   AGE=$((NOW - LASTHOP))
 
   if [ "$WALL" = 1 ] && [ "$AGE" -ge "$COOLDOWN" ]; then
+    if ! svc_lane_bound; then
+      state_set offset "$PREV_OFF"
+      if [ $((NOW - LAST_LANE_WARN)) -ge 60 ]; then
+        glog "wall detected but OpenCode's shared service is not lane-bound — rotation cannot help; launch through the shim"
+        LAST_LANE_WARN=$NOW
+      fi
+      continue
+    fi
     # A broken tunnel cannot produce a fresh /64. Repair the protocol first
     # and give WARP a few seconds to come back before burning rotation tries.
     enforce_protocol
