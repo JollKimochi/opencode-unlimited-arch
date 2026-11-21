@@ -379,5 +379,20 @@ class CustomProxyFailoverTests(unittest.TestCase):
 
 
 
+class WarpProtocolTests(unittest.TestCase):
+    def test_default_is_masque(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OUC_WARP_PROTOCOL", None)
+            self.assertEqual(ouc_common.desired_warp_protocol(), "masque")
+
+    def test_env_override(self) -> None:
+        with mock.patch.dict(os.environ, {"OUC_WARP_PROTOCOL": "WireGuard"}, clear=False):
+            self.assertEqual(ouc_common.desired_warp_protocol(), "wireguard")
+
+    def test_unknown_value_falls_back_to_masque(self) -> None:
+        with mock.patch.dict(os.environ, {"OUC_WARP_PROTOCOL": "bogus"}, clear=False):
+            self.assertEqual(ouc_common.desired_warp_protocol(), "masque")
+
+
 if __name__ == "__main__":
     unittest.main()

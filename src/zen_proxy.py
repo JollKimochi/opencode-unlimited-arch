@@ -774,6 +774,7 @@ def _repair_warp_tunnel(warp_state: _WarpState) -> bool:
     _record_event("repair", f"reconnecting WARP tunnel ({mode}/{scope})")
     try:
         from ouc_common import (
+            desired_warp_protocol,
             ensure_warp_mode,
             ensure_warp_protocol,
             find_warp_cli,
@@ -789,7 +790,7 @@ def _repair_warp_tunnel(warp_state: _WarpState) -> bool:
             if not repair_warp_registration(warp_bin, 2):
                 return False
         try:
-            ensure_warp_protocol("wireguard", warp_bin=warp_bin)
+            ensure_warp_protocol(desired_warp_protocol(), warp_bin=warp_bin)
         except Exception:
             pass
         ensure_warp_mode(warp_bin, scope)

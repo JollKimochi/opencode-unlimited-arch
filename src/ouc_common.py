@@ -388,6 +388,17 @@ def get_warp_protocol(warp_bin: str | None = None) -> str:
     return ""
 
 
+def desired_warp_protocol(default: str = "masque") -> str:
+    """Return the configured WARP protocol, MASQUE by default.
+
+    WARP's isolated proxy mode only accepts MASQUE. Forcing WireGuard while
+    the tunnel is in proxy mode fails with
+    InvalidKey("Proxy mode only supports MASQUE"), so port 40000 stays dead.
+    """
+    value = (os.environ.get("OUC_WARP_PROTOCOL") or default).strip().lower()
+    return value if value in ("wireguard", "masque") else default
+
+
 def ensure_warp_protocol(desired: str = "wireguard", warp_bin: str | None = None) -> bool:
     """Set the WARP tunnel protocol only when it differs from the requested one."""
     want = desired.strip().lower()
@@ -905,7 +916,7 @@ def hop_once(
 
     scope = _current_warp_scope()
     ensure_warp_mode(warp_bin, scope)
-    ensure_warp_protocol("wireguard", warp_bin=warp_bin)
+    ensure_warp_protocol(desired_warp_protocol(), warp_bin=warp_bin)
 
     for _rotation in range(3):
         # rotate-keys keeps the device registration and only renews the

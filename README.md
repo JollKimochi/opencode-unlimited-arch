@@ -48,6 +48,7 @@ opencode
 - **Faster guard:** `COOLDOWN=30`, poll `10s`, and the `/64` probe uses Cloudflare `cdn-cgi/trace` through WARP's SOCKS listener, with the old ipify endpoints as fallback.
 - **Fail-closed lane:** `zen-lane.sh` sets `OUC_STRICT_PROXY=1` by default. If WARP is down, the request fails instead of silently leaving from the home IP and burning the same free-tier quota the lane is trying to rotate. Set `OUC_STRICT_PROXY=0` to restore the old direct fallback.
 - **Lane-bound shared service:** the launcher detects OpenCode's shared `serve --service` process and restarts it when it was started outside the lane. Without that, the service keeps sending from the home IP and `/64` rotation can never clear the wall. `opencode-unlimited-doctor` reports whether the service is lane-bound.
+- **Protocol-aware repair:** the lane proxy's reconnect path uses `OUC_WARP_PROTOCOL` (MASQUE by default) instead of hard-coding WireGuard. Proxy mode cannot connect with WireGuard, so the old hard-coded value could leave port 40000 dead during a repair.
 - **Arch-only tree:** the Windows GUI, EXE, build scripts, and GUI-only Python dependencies are removed from `main`. The upstream history is preserved.
 
 ## How it works
@@ -171,6 +172,23 @@ opencode
 ```
 
 Close the normal-mode TUI first. The service is shared, so it cannot be lane-bound and direct at the same time.
+
+### `ERR_PROXY_TUNNEL` 503 or `ECONNRESET`
+
+The lane is fail-closed by default (`OUC_STRICT_PROXY=1`). When WARP's local SOCKS listener drops while WARP reconnects, the proxy returns **503** instead of sending the request from your home IP. A mid-stream `ECONNRESET` is the same event: WARP tore down the tunnel that was carrying the response.
+
+This is not the free-tier wall. Check the tunnel and retry:
+
+```bash
+warp-cli --accept-tos status
+ss -ltn | grep ':40000'
+curl -s -x socks5h://127.0.0.1:40000 -m 10 \
+  https://www.cloudflare.com/cdn-cgi/trace | grep -E '^(ip|warp)='
+```
+
+If the status is `Connected` and the probe returns `warp=on`, retry the request in OpenCode. The lane proxy's repair path now preserves `OUC_WARP_PROTOCOL` (MASQUE by default); it no longer switches the tunnel to WireGuard, which proxy mode cannot use.
+
+If you prefer availability over strictness, launch with `OUC_STRICT_PROXY=0`. Be aware that requests then fall back to the direct route when WARP is down, which burns the same home-IP quota the guard is trying to rotate.
 
 ### WireGuard works better than MASQUE
 
