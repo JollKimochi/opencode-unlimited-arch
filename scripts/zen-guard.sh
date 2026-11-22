@@ -220,6 +220,8 @@ print(p if isinstance(p, int) and p > 0 else "")' "$f" 2>/dev/null) || return 1
 }
 
 LAST_LANE_WARN=0
+LAST_WALL_SID=""
+LAST_FORK_WARN=0
 
 while true; do
   sleep 10
@@ -231,11 +233,15 @@ while true; do
   PREV_OFF="$OFF"
   NEWBYTES=$((SIZE - OFF))
   WALL=0
+  WALL_LINE=""
   if [ "$NEWBYTES" -gt 0 ] && [ "$NEWBYTES" -lt 50000000 ]; then
-    if tail -c +"$((OFF + 1))" "$LOGF" 2>/dev/null | grep -E -aqi "QuotaExceeded|quota_exceeded|Free usage limit|usage limit reached|Rate limit|rate_limit|too many requests|status=429|\"status\":429|credits exhausted|free-tier usage"; then
-      WALL=1
-    fi
+    WALL_LINE=$(tail -c +"$((OFF + 1))" "$LOGF" 2>/dev/null | grep -E -ai "QuotaExceeded|quota_exceeded|Free usage limit|usage limit reached|Rate limit|rate_limit|too many requests|status=429|\"status\":429|credits exhausted|free-tier usage" | tail -1)
+    [ -n "$WALL_LINE" ] && WALL=1
   fi
+  # The quota error names the session that hit it. If the same session walls
+  # again after a rotation, the free budget is per session, not per /64:
+  # rotating cannot help and only burns healthy blocks.
+  WALL_SID=$(printf '%s\n' "$WALL_LINE" | grep -ao 'sessionID=[A-Za-z0-9_-]*' | tail -1 | cut -d= -f2)
   state_set offset "$SIZE"
 
   NOW=$(date +%s)
@@ -248,6 +254,13 @@ while true; do
       if [ $((NOW - LAST_LANE_WARN)) -ge 60 ]; then
         glog "wall detected but OpenCode's shared service is not lane-bound — rotation cannot help; launch through the shim"
         LAST_LANE_WARN=$NOW
+      fi
+      continue
+    fi
+    if [ -n "$WALL_SID" ] && [ "$WALL_SID" = "$LAST_WALL_SID" ]; then
+      if [ $((NOW - LAST_FORK_WARN)) -ge 60 ]; then
+        glog "session $WALL_SID hit its free quota again after rotation — IP rotation cannot help; fork it (TUI: Fork session, or: opencode run --session $WALL_SID --fork \"continue\")"
+        LAST_FORK_WARN=$NOW
       fi
       continue
     fi
@@ -288,6 +301,7 @@ while true; do
       H=$(state_get hops); H=${H:-0}; H=$((H + 1))
       state_set hops "$H"
       glog "rotated #$H: $OLD → $NEW"
+      LAST_WALL_SID="$WALL_SID"
       python3 -c "
 import sqlite3, os
 from pathlib import Path

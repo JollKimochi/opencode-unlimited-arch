@@ -45,6 +45,7 @@ opencode
 
 - **MASQUE by default** in `install.sh` and `scripts/warp-keeper.sh`. WireGuard/UDP is blocked on some networks; MASQUE over 443 is the transport that connects. Override with `OUC_WARP_PROTOCOL=WireGuard` if your ISP throttles MASQUE.
 - **Protocol enforcement:** `zen-guard.sh` and `warp-keeper.sh` re-assert `OUC_WARP_PROTOCOL` (MASQUE by default) before touching the tunnel. Proxy mode only accepts MASQUE; WireGuard there fails with `InvalidKey("Proxy mode only supports MASQUE")`, leaving port 40000 down and every rotation stuck at `no fresh /64`. The guard also holds the wall instead of burning retries when WARP has no IPv6.
+- **Session-aware wall handling:** `zen-guard.sh` reads the `sessionID` from the quota error. If the same session hits the wall again after a rotation, it stops rotating and points to the fork command; a fresh `/64` cannot reset a per-session free budget.
 - **Faster guard:** `COOLDOWN=30`, poll `10s`, and the `/64` probe uses Cloudflare `cdn-cgi/trace` through WARP's SOCKS listener, with the old ipify endpoints as fallback.
 - **Fail-closed lane:** `zen-lane.sh` sets `OUC_STRICT_PROXY=1` by default. If WARP is down, the request fails instead of silently leaving from the home IP and burning the same free-tier quota the lane is trying to rotate. Set `OUC_STRICT_PROXY=0` to restore the old direct fallback.
 - **Lane-bound shared service:** the launcher detects OpenCode's shared `serve --service` process and restarts it when it was started outside the lane. Without that, the service keeps sending from the home IP and `/64` rotation can never clear the wall. `opencode-unlimited-doctor` reports whether the service is lane-bound.
@@ -172,6 +173,17 @@ opencode
 ```
 
 Close the normal-mode TUI first. The service is shared, so it cannot be lane-bound and direct at the same time.
+
+### The same session hits the wall again right after a rotation
+
+If `opencode-unlimited-doctor` reports the service is lane-bound and the proxy egresses through WARP, but the same session gets `Free usage limit reached` again within seconds of a rotation, the free budget is attached to that session. A fresh `/64` cannot clear it.
+
+Fork the session:
+
+- **TUI:** open the command palette and choose **Fork session** (pick the last message).
+- **CLI:** `opencode run --session <session-id> --fork "continue"`, then open the fork from `/sessions`.
+
+The fork keeps the conversation and gets a new free budget. `zen-guard.sh` extracts `sessionID` from the quota line. After one rotation for a session, it stops rotating and logs a fork hint instead of burning more `/64` blocks.
 
 ### `ERR_PROXY_TUNNEL` 503 or `ECONNRESET`
 
