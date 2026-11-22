@@ -220,8 +220,6 @@ print(p if isinstance(p, int) and p > 0 else "")' "$f" 2>/dev/null) || return 1
 }
 
 LAST_LANE_WARN=0
-LAST_WALL_SID=""
-LAST_FORK_WARN=0
 
 while true; do
   sleep 10
@@ -254,13 +252,6 @@ while true; do
       if [ $((NOW - LAST_LANE_WARN)) -ge 60 ]; then
         glog "wall detected but OpenCode's shared service is not lane-bound — rotation cannot help; launch through the shim"
         LAST_LANE_WARN=$NOW
-      fi
-      continue
-    fi
-    if [ -n "$WALL_SID" ] && [ "$WALL_SID" = "$LAST_WALL_SID" ]; then
-      if [ $((NOW - LAST_FORK_WARN)) -ge 60 ]; then
-        glog "session $WALL_SID hit its free quota again after rotation — IP rotation cannot help; fork it (TUI: Fork session, or: opencode run --session $WALL_SID --fork \"continue\")"
-        LAST_FORK_WARN=$NOW
       fi
       continue
     fi
@@ -301,7 +292,6 @@ while true; do
       H=$(state_get hops); H=${H:-0}; H=$((H + 1))
       state_set hops "$H"
       glog "rotated #$H: $OLD → $NEW"
-      LAST_WALL_SID="$WALL_SID"
       python3 -c "
 import sqlite3, os
 from pathlib import Path
@@ -315,8 +305,14 @@ for db in [Path.home() / '.config' / 'ai.opencode.desktop' / 'drafts.sqlite', Pa
 " 2>/dev/null || true
       sleep 2
       if command -v opencode >/dev/null 2>&1; then
-        nohup opencode run --continue "continue" >/dev/null 2>&1 &
-        glog "[auto-resume] sent 'continue' to active session"
+        RESUME_LOG="$STATE_DIR/auto-resume.log"
+        if [ -n "$WALL_SID" ]; then
+          nohup opencode run --session "$WALL_SID" "continue" >>"$RESUME_LOG" 2>&1 </dev/null &
+          glog "[auto-resume] sent 'continue' to $WALL_SID (log: $RESUME_LOG)"
+        else
+          nohup opencode run --continue "continue" >>"$RESUME_LOG" 2>&1 </dev/null &
+          glog "[auto-resume] sent 'continue' to the last session (no sessionID in wall line)"
+        fi
       fi
     else
       # Keep the wall pending so the next tick retries instead of losing it.

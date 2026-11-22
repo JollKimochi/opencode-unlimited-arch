@@ -45,7 +45,7 @@ opencode
 
 - **MASQUE by default** in `install.sh` and `scripts/warp-keeper.sh`. WireGuard/UDP is blocked on some networks; MASQUE over 443 is the transport that connects. Override with `OUC_WARP_PROTOCOL=WireGuard` if your ISP throttles MASQUE.
 - **Protocol enforcement:** `zen-guard.sh` and `warp-keeper.sh` re-assert `OUC_WARP_PROTOCOL` (MASQUE by default) before touching the tunnel. Proxy mode only accepts MASQUE; WireGuard there fails with `InvalidKey("Proxy mode only supports MASQUE")`, leaving port 40000 down and every rotation stuck at `no fresh /64`. The guard also holds the wall instead of burning retries when WARP has no IPv6.
-- **Session-aware wall handling:** `zen-guard.sh` reads the `sessionID` from the quota error. If the same session hits the wall again after a rotation, it stops rotating and points to the fork command; a fresh `/64` cannot reset a per-session free budget.
+- **Session-targeted auto-resume:** `zen-guard.sh` reads the `sessionID` from the quota error and resumes that exact session with `opencode run --session <id> "continue"`. The old `--continue` form is scoped to the guard's working directory (`$HOME`), so the message could land in a different project or fail silently. Resume output is appended to `guard/auto-resume.log`.
 - **Faster guard:** `COOLDOWN=30`, poll `10s`, and the `/64` probe uses Cloudflare `cdn-cgi/trace` through WARP's SOCKS listener, with the old ipify endpoints as fallback.
 - **Fail-closed lane:** `zen-lane.sh` sets `OUC_STRICT_PROXY=1` by default. If WARP is down, the request fails instead of silently leaving from the home IP and burning the same free-tier quota the lane is trying to rotate. Set `OUC_STRICT_PROXY=0` to restore the old direct fallback.
 - **Lane-bound shared service:** the launcher detects OpenCode's shared `serve --service` process and restarts it when it was started outside the lane. Without that, the service keeps sending from the home IP and `/64` rotation can never clear the wall. `opencode-unlimited-doctor` reports whether the service is lane-bound.
@@ -174,16 +174,19 @@ opencode
 
 Close the normal-mode TUI first. The service is shared, so it cannot be lane-bound and direct at the same time.
 
-### The same session hits the wall again right after a rotation
+### Auto-resume lands in the wrong session
 
-If `opencode-unlimited-doctor` reports the service is lane-bound and the proxy egresses through WARP, but the same session gets `Free usage limit reached` again within seconds of a rotation, the free budget is attached to that session. A fresh `/64` cannot clear it.
+`zen-guard.sh` runs from `$HOME`. The old `opencode run --continue "continue"` form continues the last session of the guard's current project, not necessarily the session that hit the wall. It can land in another project or exit without sending anything, while the guard still logs `[auto-resume] sent 'continue'`.
 
-Fork the session:
+The guard now extracts `sessionID` from the quota line and resumes exactly that session:
 
-- **TUI:** open the command palette and choose **Fork session** (pick the last message).
-- **CLI:** `opencode run --session <session-id> --fork "continue"`, then open the fork from `/sessions`.
+```bash
+opencode run --session <session-id> "continue"
+```
 
-The fork keeps the conversation and gets a new free budget. `zen-guard.sh` extracts `sessionID` from the quota line. After one rotation for a session, it stops rotating and logs a fork hint instead of burning more `/64` blocks.
+That form works from any directory. Check `~/.local/share/opencode-unlimited/guard/auto-resume.log` if a resume does not appear in the session.
+
+Rotate as usual when the wall comes back. A fresh `/64` can have quota again; if a rotation produces a block that is already burned, the guard retries and blacklists it. Only if every fresh block walls immediately should you suspect the WARP pool itself.
 
 ### `ERR_PROXY_TUNNEL` 503 or `ECONNRESET`
 
