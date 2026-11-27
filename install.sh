@@ -165,7 +165,7 @@ if [ -n "$SRC" ]; then
   cp "$SRC/scripts/"*.sh "$DEST/scripts/"
 else
   say "fetching scripts from github"
-  for f in warp-keeper.sh zen-lane.sh zen-guard.sh zen-hop.sh doctor.sh; do
+  for f in warp-keeper.sh zen-lane.sh zen-guard.sh zen-hop.sh doctor.sh opencode-desktop-unlimited.sh; do
     curl -fsSL "$RAW/scripts/$f" -o "$DEST/scripts/$f" || die "could not fetch $f"
   done
 fi
@@ -320,6 +320,34 @@ fi
 printf '#!/usr/bin/env bash\nexport OUC_DEST="%s"\nexport OUC_REAL_BIN="%s"\nexec bash "%s/scripts/zen-lane.sh" "$@"\n' "$DEST" "$OC_REAL" "$DEST" > "$SHIM"
 chmod +x "$SHIM"
 ok "opencode entry → local proxy lane (WARP egress per launch)"
+
+# ---------------------------------------------------------------- desktop (optional)
+# The desktop app ships its own opencode-cli service. This wrapper points that
+# service at the same WARP lane and keeps the fail-closed default.
+DESKTOP_APP=""
+if command -v opencode-desktop >/dev/null 2>&1; then
+  DESKTOP_APP="$(command -v opencode-desktop)"
+elif [ -x "$HOME/Downloads/opencode-desktop-linux-x86_64.AppImage" ]; then
+  DESKTOP_APP="$HOME/Downloads/opencode-desktop-linux-x86_64.AppImage"
+fi
+if [ -n "$DESKTOP_APP" ]; then
+  install -m 755 "$DEST/scripts/opencode-desktop-unlimited.sh" "$BIN_DIR/opencode-desktop-unlimited"
+  mkdir -p "$HOME/.local/share/applications"
+  cat > "$HOME/.local/share/applications/opencode-desktop-unlimited.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=OpenCode Desktop (Unlimited)
+Comment=OpenCode Desktop routed through the Opencode Unlimited WARP lane
+Exec=$BIN_DIR/opencode-desktop-unlimited %U
+Terminal=false
+Categories=Development;
+StartupWMClass=ai.opencode.desktop
+EOF
+  update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
+  ok "desktop wrapper installed: $BIN_DIR/opencode-desktop-unlimited"
+else
+  say "opencode desktop not found — install opencode-desktop-bin, then rerun me for the desktop wrapper"
+fi
 
 # ---------------------------------------------------------------- verify end to end (the installer doesn't lie)
 say "verifying the lane end to end (this hits opencode once)…"

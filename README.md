@@ -41,6 +41,22 @@ opencode
 
 `opencode-beta` provides `/usr/bin/opencode`. The installer adds a shim at `~/.local/bin/opencode`; the shim starts the lane proxy and then the real CLI.
 
+## Desktop app (optional)
+
+The desktop app is the official OpenCode client (`opencode-desktop-bin` on Arch, or the AppImage). The installer adds a wrapper that runs it through the same lane and shares the same background service as the CLI:
+
+```bash
+yay -S --needed opencode-desktop-bin
+cd opencode-unlimited-arch
+bash install.sh    # detects the desktop app and installs the wrapper + menu entry
+```
+
+Launch **OpenCode Desktop (Unlimited)** from the menu, or run `opencode-desktop-unlimited`. The wrapper starts `zen_proxy.py` on `127.0.0.1:40100`, exports the proxy environment, and passes `--proxy-server` to Electron. The bundled `opencode-cli` service inherits the env, so model traffic goes through WARP and fails closed when WARP is down.
+
+Override the app path with `OUC_DESKTOP_APP` and the proxy port with `OUC_DESKTOP_PROXY_PORT`.
+
+The TUI and the desktop share `~/.local/state/opencode/service.json`. `zen-lane.sh` prefers the desktop's bundled CLI so both sides always run the same version; a version-mismatched TUI would otherwise replace the desktop's service on launch.
+
 ## What this fork changes
 
 - **MASQUE by default** in `install.sh` and `scripts/warp-keeper.sh`. WireGuard/UDP is blocked on some networks; MASQUE over 443 is the transport that connects. Override with `OUC_WARP_PROTOCOL=WireGuard` if your ISP throttles MASQUE.
@@ -48,7 +64,7 @@ opencode
 - **Session-targeted auto-resume:** `zen-guard.sh` reads the `sessionID` from the quota error and resumes that exact session with `opencode run --session <id> "continue"`. The old `--continue` form is scoped to the guard's working directory (`$HOME`), so the message could land in a different project or fail silently. Resume output is appended to `guard/auto-resume.log`.
 - **Faster guard:** `COOLDOWN=30`, poll `10s`, and the `/64` probe uses Cloudflare `cdn-cgi/trace` through WARP's SOCKS listener, with the old ipify endpoints as fallback.
 - **Fail-closed lane:** `zen-lane.sh` sets `OUC_STRICT_PROXY=1` by default. If WARP is down, the request fails instead of silently leaving from the home IP and burning the same free-tier quota the lane is trying to rotate. Set `OUC_STRICT_PROXY=0` to restore the old direct fallback.
-- **Lane-bound shared service:** the launcher detects OpenCode's shared `serve --service` process and restarts it when it was started outside the lane. Without that, the service keeps sending from the home IP and `/64` rotation can never clear the wall. `opencode-unlimited-doctor` reports whether the service is lane-bound.
+- **Lane-bound shared service:** the launcher detects OpenCode's shared `serve --service` process (`opencode` or the desktop's `opencode-cli`) and restarts it when it was started outside the lane. It also prefers the desktop's bundled CLI so the TUI and desktop share one version and one service. Without that, the service keeps sending from the home IP, or the TUI restarts the desktop's service on launch. `opencode-unlimited-doctor` reports whether the service is lane-bound.
 - **Protocol-aware repair:** the lane proxy's reconnect path uses `OUC_WARP_PROTOCOL` (MASQUE by default) instead of hard-coding WireGuard. Proxy mode cannot connect with WireGuard, so the old hard-coded value could leave port 40000 dead during a repair.
 - **Arch-only tree:** the Windows GUI, EXE, build scripts, and GUI-only Python dependencies are removed from `main`. The upstream history is preserved.
 
