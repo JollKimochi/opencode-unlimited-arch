@@ -17,7 +17,34 @@ BRAND="opencode-unlimited"
 DEST="${OUC_DEST:-${XDG_DATA_HOME:-$HOME/.local/share}/$BRAND}"
 PYPROXY="$DEST/python/zen_proxy.py"
 
+SERVICE_STATE="${XDG_STATE_HOME:-$HOME/.local/state}/opencode/service.json"
+
+# The desktop app ships its own opencode-cli and registers it as the shared
+# background service. A version-mismatched TUI replaces that service on
+# launch, which restarts the desktop's connection. Prefer the desktop CLI so
+# both sides always run the same version; OUC_DESKTOP_CLI=0 opts out.
+desktop_cli(){
+  local base="$HOME/.config/ai.opencode.desktop/cli" ver dir
+  [ -d "$base" ] || return 1
+  ver=$(python3 -c '
+import json, sys
+try: d = json.load(open(sys.argv[1]))
+except Exception: raise SystemExit(1)
+v = d.get("version")
+print(v if isinstance(v, str) else "")' "$SERVICE_STATE" 2>/dev/null)
+  if [ -n "$ver" ] && [ -x "$base/$ver-x64/opencode-cli" ]; then
+    printf '%s\n' "$base/$ver-x64/opencode-cli"
+    return 0
+  fi
+  dir=$(ls -d "$base"/*/ 2>/dev/null | sort -V | tail -1)
+  [ -n "$dir" ] && [ -x "${dir}opencode-cli" ] || return 1
+  printf '%s\n' "${dir}opencode-cli"
+}
+
 REAL="${OUC_REAL_BIN:-$HOME/.opencode/bin/opencode}"
+if [ "${OUC_DESKTOP_CLI:-1}" != "0" ]; then
+  DCLI=$(desktop_cli) && REAL="$DCLI"
+fi
 if [ ! -x "$REAL" ]; then
   for c in "$HOME/.local/bin/opencode" /usr/local/bin/opencode /usr/bin/opencode; do
     [ -x "$c" ] || continue
@@ -95,13 +122,15 @@ export no_proxy="$NO_PROXY"
 # every request leaves from the home IP, so WARP /64 rotations change nothing
 # and the free-tier wall never clears. If the registered service is not bound
 # to a live lane proxy, stop it so this launch spawns a fresh one with our env.
-SERVICE_STATE="${XDG_STATE_HOME:-$HOME/.local/state}/opencode/service.json"
 
 service_lane_port(){
   local pid="$1" env_url port
   kill -0 "$pid" 2>/dev/null || return 1
+  # The desktop bundles its CLI as `opencode-cli serve --service`; the system
+  # package uses `opencode serve --service`. Match both, or a running desktop
+  # service looks unbound and gets killed on every terminal launch.
   tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null \
-    | grep -q 'opencode serve --service' || return 1
+    | grep -qE '(^|/)opencode(-cli)? serve --service( |$)' || return 1
   env_url=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null \
     | sed -n -e 's/^HTTPS_PROXY=//p' -e 's/^https_proxy=//p' \
              -e 's/^ALL_PROXY=//p' -e 's/^all_proxy=//p' | head -1)
