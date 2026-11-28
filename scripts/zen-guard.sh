@@ -106,14 +106,21 @@ m64(){ echo "$1" | cut -d: -f1-4; }
 
 # blacklist entries are /64-normalized (first 4 groups) so the same block
 # cannot return with a different interface ID and pass the check.
+# The free quota is a daily window: the 429's retry-after lands exactly on
+# 00:00 UTC. A /64 walled yesterday is usable again today, so the blacklist
+# is scoped to one UTC day instead of being permanent.
 blacklist_add(){
   [ -n "$1" ] || return 0
   python3 - "$1" "$STATE" <<'PY' 2>/dev/null
-import json,sys
+import json,sys,time
 def m64(a): return ":".join(a.split(":")[:4])
 p=sys.argv[2]
 try: d=json.load(open(p))
 except: d={"blacklist":[],"offset":0,"last_hop":0,"hops":0,"current":""}
+today=time.strftime("%Y-%m-%d", time.gmtime())
+if d.get("blacklist_day", today) != today:
+    d["blacklist"]=[]
+d["blacklist_day"]=today
 m=m64(sys.argv[1])
 d["blacklist"]=[x for x in d["blacklist"] if x and m64(x)!=m]+[m]
 d["blacklist"]=d["blacklist"][-200:]
@@ -123,10 +130,13 @@ PY
 
 is_burnt(){
   python3 - "$1" "$STATE" <<'PY' 2>/dev/null
-import json,sys
+import json,sys,time
 def m64(a): return ":".join(a.split(":")[:4])
 try: d=json.load(open(sys.argv[2]))
 except: sys.exit(1)
+# Legacy state has no day stamp: keep those entries for today, expire tomorrow.
+today=time.strftime("%Y-%m-%d", time.gmtime())
+if d.get("blacklist_day", today) != today: sys.exit(1)
 m=m64(sys.argv[1])
 sys.exit(0 if any(x and m64(x)==m for x in d.get("blacklist",[])) else 1)
 PY
@@ -274,7 +284,7 @@ while true; do
     # Same session walling again after a rotation means that rotation did not
     # clear the wall (burnt block or per-session budget). Rotating again only
     # burns another block and resumes into the same error.
-    if [ -n "$WALL_SID" ] && [ "$WALL_SID" = "$(state_get wall_sid)" ]; then
+    if [ -n "$WALL_SID" ] && [ "$WALL_SID" = "$(state_get wall_sid)" ] && [ "$(state_get wall_sid_day)" = "$(date -u +%F)" ]; then
       state_set offset "$PREV_OFF"
       if [ $((NOW - LAST_LANE_WARN)) -ge 60 ]; then
         glog "same session walled again after rotation ($WALL_SID) — rotation did not clear it; not rotating again"
@@ -321,7 +331,10 @@ while true; do
       state_set current "$NEW"
       H=$(state_get hops); H=${H:-0}; H=$((H + 1))
       state_set hops "$H"
-      [ -n "$WALL_SID" ] && state_set wall_sid "$WALL_SID"
+      if [ -n "$WALL_SID" ]; then
+        state_set wall_sid "$WALL_SID"
+        state_set wall_sid_day "$(date -u +%F)"
+      fi
       glog "rotated #$H: $OLD → $NEW"
       python3 -c "
 import sqlite3, os
