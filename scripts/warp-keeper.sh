@@ -72,44 +72,71 @@ proxy_healthy(){
   proxy_ready && socks_egress_ok
 }
 
+# A probe can pass while the MASQUE edge is bleeding packets. Sustained loss
+# is what turns CONNECTs into 503s, and it only clears after the daemon picks
+# a new edge. Read warp-svc's own samples instead of guessing from one curl.
+WARP_HEALTH_FILE="${OUC_WARP_HEALTH_FILE:-/var/log/cloudflare-warp/cfwarp_service_network_health_stats.txt}"
+LOSS_THRESHOLD="${OUC_WARP_LOSS_THRESHOLD:-0.05}"
+LOSS_SAMPLES="${OUC_WARP_LOSS_SAMPLES:-4}"
+
+socks_loss_degraded(){
+  [ -r "$WARP_HEALTH_FILE" ] || return 1
+  local avg
+  avg=$(tail -n 60 "$WARP_HEALTH_FILE" 2>/dev/null \
+        | grep -o 'estimated_loss: [0-9.]*' \
+        | tail -n "$LOSS_SAMPLES" \
+        | awk '{s+=$2; n++} END {if (n>0) printf "%.6f", s/n}')
+  [ -n "$avg" ] || return 1
+  awk -v a="$avg" -v t="$LOSS_THRESHOLD" 'BEGIN{exit !(a>t)}'
+}
+
 ensure_connected(){
   enforce_protocol
 
+  DEGRADED=0
   # 1. Already connected in the right shape: do not touch anything.
   #    A stale "Connected" with no port 40000 listener is mode drift, not health.
   if wo status | head -1 | grep -q Connected; then
     if [ "$MODE" != "proxy" ] || proxy_healthy; then
-      return 0
+      if [ "$MODE" = "proxy" ] && socks_loss_degraded; then
+        DEGRADED=1
+        echo "warp edge degraded (sustained loss) — rotating edge"
+      else
+        return 0
+      fi
+    else
+      w disconnect
     fi
-    w disconnect
   fi
 
-  # 2. In-flight handshake grace window
-  if wo status | head -1 | grep -qi "connecting"; then
+  if [ "$DEGRADED" = "0" ]; then
+    # 2. In-flight handshake grace window
+    if wo status | head -1 | grep -qi "connecting"; then
+      for i in $(seq 1 8); do
+        sleep 1
+        if wo status | head -1 | grep -q Connected; then
+          if [ "$MODE" != "proxy" ] || proxy_healthy; then return 0; fi
+        fi
+        wo status | head -1 | grep -qi "connecting" || break
+      done
+    fi
+
+    # 3. Disconnected: ensure the selected mode and connect
+    if [ "$MODE" = "warp" ]; then
+      w mode warp
+    else
+      w mode proxy
+      w proxy port 40000
+    fi
+    w connect
+
     for i in $(seq 1 8); do
       sleep 1
       if wo status | head -1 | grep -q Connected; then
         if [ "$MODE" != "proxy" ] || proxy_healthy; then return 0; fi
       fi
-      wo status | head -1 | grep -qi "connecting" || break
     done
   fi
-
-  # 3. Disconnected: ensure the selected mode and connect
-  if [ "$MODE" = "warp" ]; then
-    w mode warp
-  else
-    w mode proxy
-    w proxy port 40000
-  fi
-  w connect
-
-  for i in $(seq 1 8); do
-    sleep 1
-    if wo status | head -1 | grep -q Connected; then
-      if [ "$MODE" != "proxy" ] || proxy_healthy; then return 0; fi
-    fi
-  done
 
   # 4. Gentle recovery: renew the session keys (registration is preserved).
   #    Rate-limit repairs so a flapping network is not churned every tick.

@@ -657,7 +657,7 @@ def _open_warp_direct(
     if scope == "isolated":
         try:
             from tor_manager import open_socks5_tunnel
-            return open_socks5_tunnel(clean_host, port, socks_host="127.0.0.1", socks_port=40000, timeout=2.0)
+            return open_socks5_tunnel(clean_host, port, socks_host="127.0.0.1", socks_port=40000, timeout=6.0)
         except Exception:
             pass
 
@@ -672,7 +672,7 @@ def _open_warp_direct(
         # Try local WARP SOCKS5 if TUN socket bind failed
         try:
             from tor_manager import open_socks5_tunnel
-            return open_socks5_tunnel(clean_host, port, socks_host="127.0.0.1", socks_port=40000, timeout=2.0)
+            return open_socks5_tunnel(clean_host, port, socks_host="127.0.0.1", socks_port=40000, timeout=6.0)
         except Exception:
             pass
 
@@ -853,24 +853,28 @@ def _connect_upstream(
     port: int,
     warp_state: _WarpState,
 ) -> socket.socket:
-    """Open the configured route, retrying once before repairing WARP.
+    """Open the configured route, retrying before repairing WARP.
 
-    Reconnecting the tunnel is destructive to every live response stream, so
-    it is deferred while another tunnel is active. The failed connection still
-    gets one quick retry, which covers brief edge hiccups.
+    A single failed CONNECT on a lossy MASQUE edge is not a dead tunnel, so
+    the route gets three attempts with a short backoff before the caller is
+    told it is down. Reconnecting the tunnel is destructive to every live
+    response stream, so repair stays deferred while other tunnels are active.
     """
-    try:
-        return _open_upstream(host, port, warp_state)
-    except Exception as first:
-        repaired = False
-        if _active_tunnels() == 0:
-            repaired = _repair_warp_tunnel(warp_state)
-        time.sleep(0.5 if repaired else 0.25)
+    attempts = 3
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
         try:
             return _open_upstream(host, port, warp_state)
-        except Exception as second:
-            _record_event("connect_fail", f"{type(second).__name__}: {second}", host)
-            raise second from first
+        except Exception as exc:
+            last_exc = exc
+            if attempt == attempts - 1:
+                break
+            repaired = False
+            if _active_tunnels() == 0:
+                repaired = _repair_warp_tunnel(warp_state)
+            time.sleep(0.6 if repaired else 0.3 * (attempt + 1))
+    _record_event("connect_fail", f"{type(last_exc).__name__}: {last_exc}", host)
+    raise last_exc
 
 
 def _make_handler(warp_state: _WarpState):
