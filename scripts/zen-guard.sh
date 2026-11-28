@@ -271,13 +271,13 @@ while true; do
       fi
       continue
     fi
-    # Same session walling again after a rotation means the free budget is
-    # per session, not per /64. Rotating only burns fresh blocks and every
-    # auto-resume lands on the same wall.
+    # Same session walling again after a rotation means that rotation did not
+    # clear the wall (burnt block or per-session budget). Rotating again only
+    # burns another block and resumes into the same error.
     if [ -n "$WALL_SID" ] && [ "$WALL_SID" = "$(state_get wall_sid)" ]; then
       state_set offset "$PREV_OFF"
       if [ $((NOW - LAST_LANE_WARN)) -ge 60 ]; then
-        glog "same session walled again after rotation ($WALL_SID) — budget is per session, not per /64; not rotating"
+        glog "same session walled again after rotation ($WALL_SID) — rotation did not clear it; not rotating again"
         LAST_LANE_WARN=$NOW
       fi
       continue
