@@ -19,6 +19,7 @@ STATE_DIR="$DEST/guard"
 STATE="$STATE_DIR/state.json"
 GUARD_LOG="$STATE_DIR/guard.log"
 PAUSE_FILE="${OUC_PAUSE_FILE:-$DEST/keeper.pause}"
+GUARD_PAUSE="${OUC_GUARD_PAUSE:-$DEST/guard.pause}"
 
 # warp binary: service env → PATH → common fallbacks. probe with/without
 # --accept-tos (shimmed boxes pass it twice = dead CLI).
@@ -224,6 +225,13 @@ LAST_LANE_WARN=0
 while true; do
   sleep 10
 
+  # Normal-mode switch: a pause file silences the guard without stopping the
+  # unit, and the offset advances so unpausing does not replay old walls.
+  if [ -f "$GUARD_PAUSE" ]; then
+    [ -f "$LOGF" ] && state_set offset "$(wc -c < "$LOGF" 2>/dev/null || echo 0)"
+    continue
+  fi
+
   # ---- wall sniff (new bytes only) ----
   [ -f "$LOGF" ] || continue
   SIZE=$(wc -c < "$LOGF" 2>/dev/null || echo 0)
@@ -251,6 +259,17 @@ while true; do
       state_set offset "$PREV_OFF"
       if [ $((NOW - LAST_LANE_WARN)) -ge 60 ]; then
         glog "wall detected but OpenCode's shared service is not lane-bound — rotation cannot help; launch through the shim"
+        LAST_LANE_WARN=$NOW
+      fi
+      continue
+    fi
+    # Same session walling again after a rotation means the free budget is
+    # per session, not per /64. Rotating only burns fresh blocks and every
+    # auto-resume lands on the same wall.
+    if [ -n "$WALL_SID" ] && [ "$WALL_SID" = "$(state_get wall_sid)" ]; then
+      state_set offset "$PREV_OFF"
+      if [ $((NOW - LAST_LANE_WARN)) -ge 60 ]; then
+        glog "same session walled again after rotation ($WALL_SID) — budget is per session, not per /64; not rotating"
         LAST_LANE_WARN=$NOW
       fi
       continue
@@ -291,6 +310,7 @@ while true; do
       state_set current "$NEW"
       H=$(state_get hops); H=${H:-0}; H=$((H + 1))
       state_set hops "$H"
+      [ -n "$WALL_SID" ] && state_set wall_sid "$WALL_SID"
       glog "rotated #$H: $OLD → $NEW"
       python3 -c "
 import sqlite3, os
