@@ -55,13 +55,30 @@ proxy_ready(){
   (exec 3<>/dev/tcp/127.0.0.1/40000) 2>/dev/null
 }
 
+# A listening SOCKS port is not a working tunnel: warp-svc can report
+# Connected while the MASQUE session is dead. Probe real egress and
+# require warp=on so the keeper repairs that state instead of trusting it.
+socks_egress_ok(){
+  local out
+  for _ in 1 2; do
+    out=$(curl -s -m 4 -x socks5h://127.0.0.1:40000 \
+          https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null) || continue
+    printf '%s\n' "$out" | grep -qx 'warp=on' && return 0
+  done
+  return 1
+}
+
+proxy_healthy(){
+  proxy_ready && socks_egress_ok
+}
+
 ensure_connected(){
   enforce_protocol
 
   # 1. Already connected in the right shape: do not touch anything.
   #    A stale "Connected" with no port 40000 listener is mode drift, not health.
   if wo status | head -1 | grep -q Connected; then
-    if [ "$MODE" != "proxy" ] || proxy_ready; then
+    if [ "$MODE" != "proxy" ] || proxy_healthy; then
       return 0
     fi
     w disconnect
@@ -72,7 +89,7 @@ ensure_connected(){
     for i in $(seq 1 8); do
       sleep 1
       if wo status | head -1 | grep -q Connected; then
-        if [ "$MODE" != "proxy" ] || proxy_ready; then return 0; fi
+        if [ "$MODE" != "proxy" ] || proxy_healthy; then return 0; fi
       fi
       wo status | head -1 | grep -qi "connecting" || break
     done
@@ -90,7 +107,7 @@ ensure_connected(){
   for i in $(seq 1 8); do
     sleep 1
     if wo status | head -1 | grep -q Connected; then
-      if [ "$MODE" != "proxy" ] || proxy_ready; then return 0; fi
+      if [ "$MODE" != "proxy" ] || proxy_healthy; then return 0; fi
     fi
   done
 
@@ -120,7 +137,7 @@ ensure_connected(){
   for i in $(seq 1 6); do
     sleep 1
     if wo status | head -1 | grep -q Connected; then
-      if [ "$MODE" != "proxy" ] || proxy_ready; then return 0; fi
+      if [ "$MODE" != "proxy" ] || proxy_healthy; then return 0; fi
     fi
   done
 
@@ -137,13 +154,13 @@ ensure_connected(){
     w connect
     sleep 4
     if wo status | head -1 | grep -q Connected; then
-      [ "$MODE" != "proxy" ] || proxy_ready
+      [ "$MODE" != "proxy" ] || proxy_healthy
       return $?
     fi
   fi
 
   wo status | head -1 | grep -q Connected || return 1
-  [ "$MODE" != "proxy" ] || proxy_ready
+  [ "$MODE" != "proxy" ] || proxy_healthy
 }
 
 ensure_guard(){
