@@ -253,6 +253,14 @@ while true; do
   NOW=$(date +%s)
   LASTHOP=$(state_get last_hop); LASTHOP=${LASTHOP:-0}
   AGE=$((NOW - LASTHOP))
+  BACKOFF=$(state_get backoff_until); BACKOFF=${BACKOFF:-0}
+
+  # Pool exhausted: stay quiet until the backoff expires instead of retrying
+  # a wall that rotation cannot clear.
+  if [ "$WALL" = 1 ] && [ "$NOW" -lt "$BACKOFF" ]; then
+    state_set offset "$PREV_OFF"
+    continue
+  fi
 
   if [ "$WALL" = 1 ] && [ "$AGE" -ge "$COOLDOWN" ]; then
     if ! svc_lane_bound; then
@@ -299,11 +307,14 @@ while true; do
       if is_burnt "$V"; then glog "try $TRY: cloudflare returned a blacklisted /64 ($V) — again"; continue; fi
       NEW="$V"; break
     done
-    # every block burned → recycle the oldest blacklist entry
+    # Every block burned → do NOT recycle one. A known-walled /64 only
+    # reproduces the same wall, and resuming into it is the rotate-again loop.
+    # Keep the wall pending and back off instead of churning the tunnel.
     if [ -z "$NEW" ]; then
-      glog "everything blacklisted — recycling oldest block"
-      V=$(hop_once "$OLD")
-      [ -n "$V" ] && NEW="$V"
+      state_set offset "$PREV_OFF"
+      state_set backoff_until "$((NOW + 1800))"
+      glog "no fresh /64 left — pool exhausted, backing off 30m (no rotation, no resume)"
+      continue
     fi
     if [ -n "$NEW" ]; then
       state_set last_hop "$NOW"
